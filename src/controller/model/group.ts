@@ -1,7 +1,11 @@
 import assert from 'assert';
 
+import {eq} from 'drizzle-orm';
+
 import {logger} from '../../utils/logger';
 import * as Zcl from '../../zspec/zcl';
+import * as schema from '../database/schema';
+import {InsertGroup, SelectGroup} from '../database/schema';
 import ZclTransactionSequenceNumber from '../helpers/zclTransactionSequenceNumber';
 import {DatabaseEntry, KeyValue} from '../tstype';
 import Device from './device';
@@ -58,7 +62,7 @@ class Group extends Entity {
         Group.loadedFromDatabase = false;
     }
 
-    private static fromDatabaseEntry(entry: DatabaseEntry): Group {
+    private static fromDatabaseEntry(entry: SelectGroup): Group {
         const members = new Set<Endpoint>();
 
         for (const member of entry.members) {
@@ -74,22 +78,22 @@ class Group extends Entity {
             }
         }
 
-        return new Group(entry.id, entry.groupID, members, entry.meta);
+        return new Group(entry.id, entry.groupId, members, entry.meta || {});
     }
 
-    private toDatabaseRecord(): DatabaseEntry {
+    private toDatabaseRecord(): InsertGroup {
         const members: DatabaseEntry['members'] = [];
 
         for (const member of this.members) {
             members.push({deviceIeeeAddr: member.getDevice().ieeeAddr, endpointID: member.ID});
         }
 
-        return {id: this.databaseID, type: 'Group', groupID: this.groupID, members, meta: this.meta};
+        return {id: this.databaseID, groupId: this.groupID, members: members, meta: this.meta};
     }
 
     private static loadFromDatabaseIfNecessary(): void {
         if (!Group.loadedFromDatabase) {
-            for (const entry of Entity.database!.getEntriesIterator(['Group'])) {
+            for (const entry of Entity.database!.query.group.findMany().sync()) {
                 const group = Group.fromDatabaseEntry(entry);
                 Group.groups.set(group.groupID, group);
             }
@@ -134,9 +138,8 @@ class Group extends Entity {
             throw new Error(`Group with groupID '${groupID}' already exists`);
         }
 
-        const databaseID = Entity.database!.newID();
-        const group = new Group(databaseID, groupID, new Set(), {});
-        Entity.database!.insert(group.toDatabaseRecord());
+        const group_record = Entity.database!.insert(schema.group).values({groupId: groupID}).returning().all();
+        const group = Group.fromDatabaseEntry(group_record[0]);
 
         Group.groups.set(group.groupID, group);
         return group;
@@ -153,15 +156,13 @@ class Group extends Entity {
     public removeFromDatabase(): void {
         Group.loadFromDatabaseIfNecessary();
 
-        if (Entity.database!.has(this.databaseID)) {
-            Entity.database!.remove(this.databaseID);
-        }
+        Entity.database!.delete(schema.group).where(eq(schema.group.id, this.databaseID)).run();
 
         Group.groups.delete(this.groupID);
     }
 
-    public save(writeDatabase = true): void {
-        Entity.database!.update(this.toDatabaseRecord(), writeDatabase);
+    public save(): void {
+        Entity.database!.update(schema.group).set(this.toDatabaseRecord()).where(eq(schema.group.id, this.databaseID)).run();
     }
 
     public addMember(endpoint: Endpoint): void {

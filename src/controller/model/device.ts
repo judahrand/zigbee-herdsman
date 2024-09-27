@@ -1,5 +1,7 @@
 import assert from 'assert';
 
+import {eq} from 'drizzle-orm';
+
 import {Events as AdapterEvents} from '../../adapter';
 import {LQINeighbor, RoutingTableEntry} from '../../adapter/tstype';
 import {Wait} from '../../utils';
@@ -11,9 +13,11 @@ import * as Zcl from '../../zspec/zcl';
 import {ClusterDefinition, CustomClusters} from '../../zspec/zcl/definition/tstype';
 import * as Zdo from '../../zspec/zdo';
 import {ControllerEventMap} from '../controller';
+import * as schema from '../database/schema';
+import {InsertDevice, SelectDevice} from '../database/schema';
 import {ZclFrameConverter} from '../helpers';
 import ZclTransactionSequenceNumber from '../helpers/zclTransactionSequenceNumber';
-import {DatabaseEntry, DeviceType, KeyValue} from '../tstype';
+import {DeviceType, KeyValue} from '../tstype';
 import Endpoint from './endpoint';
 import Entity from './entity';
 
@@ -526,7 +530,7 @@ class Device extends Entity<ControllerEventMap> {
         Device.nwkToIeeeCache.clear();
     }
 
-    private static fromDatabaseEntry(entry: DatabaseEntry): Device {
+    private static fromDatabaseEntry(entry: SelectDevice): Device {
         const networkAddress = entry.nwkAddr;
         const ieeeAddr = entry.ieeeAddr;
         const endpoints: Endpoint[] = [];
@@ -537,10 +541,6 @@ class Device extends Entity<ControllerEventMap> {
 
         const meta = entry.meta ? entry.meta : {};
 
-        if (entry.type === 'Group') {
-            throw new Error('Cannot load device from group');
-        }
-
         // default: no timeout (messages expire immediately after first send attempt)
         let pendingRequestTimeout = 0;
         if (endpoints.filter((e): boolean => e.inputClusters.includes(Zcl.Clusters.genPollCtrl.ID)).length > 0) {
@@ -549,7 +549,7 @@ class Device extends Entity<ControllerEventMap> {
             /* istanbul ignore else */
         }
         // always load value from database available (modernExtend.quirkCheckinInterval() exists for devices without genPollCtl)
-        if (entry.checkinInterval !== undefined) {
+        if (entry.checkinInterval !== null) {
             // if the checkin interval is known, messages expire by default after one checkin interval
             pendingRequestTimeout = entry.checkinInterval * 1000; // milliseconds
         }
@@ -560,26 +560,26 @@ class Device extends Entity<ControllerEventMap> {
             entry.type,
             ieeeAddr,
             networkAddress,
-            entry.manufId,
+            entry.manufId !== null ? entry.manufId : undefined,
             endpoints,
-            entry.manufName,
-            entry.powerSource,
-            entry.modelId,
-            entry.appVersion,
-            entry.stackVersion,
-            entry.zclVersion,
-            entry.hwVersion,
-            entry.dateCode,
-            entry.swBuildId,
+            entry.manufName !== null ? entry.manufName : undefined,
+            entry.powerSource !== null ? entry.powerSource : undefined,
+            entry.modelId !== null ? entry.modelId : undefined,
+            entry.appVersion !== null ? entry.appVersion : undefined,
+            entry.stackVersion !== null ? entry.stackVersion : undefined,
+            entry.zclVersion !== null ? entry.zclVersion : undefined,
+            entry.hwVersion !== null ? entry.hwVersion : undefined,
+            entry.dateCode !== null ? entry.dateCode : undefined,
+            entry.swBuildId !== null ? entry.swBuildId : undefined,
             entry.interviewCompleted,
             meta,
-            entry.lastSeen,
-            entry.checkinInterval,
+            entry.lastSeen ? entry.lastSeen : undefined,
+            entry.checkinInterval !== null ? entry.checkinInterval : undefined,
             pendingRequestTimeout,
         );
     }
 
-    private toDatabaseEntry(): DatabaseEntry {
+    public toDatabaseEntry(): InsertDevice {
         const epList = this.endpoints.map((e): number => e.ID);
         const endpoints: KeyValue = {};
 
@@ -611,13 +611,13 @@ class Device extends Entity<ControllerEventMap> {
         };
     }
 
-    public save(writeDatabase = true): void {
-        Entity.database!.update(this.toDatabaseEntry(), writeDatabase);
+    public save(): void {
+        Entity.database!.update(schema.device).set(this.toDatabaseEntry()).where(eq(schema.device.id, this.ID)).run();
     }
 
     private static loadFromDatabaseIfNecessary(): void {
         if (!Device.loadedFromDatabase) {
-            for (const entry of Entity.database!.getEntriesIterator(['Coordinator', 'EndDevice', 'Router', 'GreenPower', 'Unknown'])) {
+            for (const entry of Entity.database!.query.device.findMany().sync()) {
                 const device = Device.fromDatabaseEntry(entry);
 
                 Device.devices.set(device.ieeeAddr, device);
@@ -682,7 +682,7 @@ class Device extends Entity<ControllerEventMap> {
 
             this._interviewCompleted = interviewCompleted ?? this._interviewCompleted;
 
-            Entity.database!.insert(this.toDatabaseEntry());
+            Entity.database!.insert(schema.device).values(this.toDatabaseEntry()).run();
         } else {
             throw new Error(`Device '${this.ieeeAddr}' is not deleted`);
         }
@@ -704,31 +704,25 @@ class Device extends Entity<ControllerEventMap> {
             throw new Error(`Device with IEEE address '${ieeeAddr}' already exists`);
         }
 
-        const ID = Entity.database!.newID();
-        const device = new Device(
-            ID,
-            type,
-            ieeeAddr,
-            networkAddress,
-            manufacturerID,
-            [],
-            manufacturerName,
-            powerSource,
-            modelID,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            interviewCompleted,
-            {},
-            undefined,
-            undefined,
-            0,
-        );
+        const device_record = Entity.database!.insert(schema.device)
+            .values({
+                type: type,
+                ieeeAddr: ieeeAddr,
+                nwkAddr: networkAddress,
+                manufId: manufacturerID,
+                epList: [],
+                endpoints: [],
+                manufName: manufacturerName,
+                powerSource: powerSource,
+                modelId: modelID,
+                interviewCompleted: interviewCompleted,
+                meta: {},
+                lastSeen: 0,
+            })
+            .returning()
+            .all();
 
-        Entity.database!.insert(device.toDatabaseEntry());
+        const device = Device.fromDatabaseEntry(device_record[0]);
         Device.devices.set(device.ieeeAddr, device);
         Device.nwkToIeeeCache.set(device.networkAddress, device.ieeeAddr);
         return device;
@@ -1142,9 +1136,7 @@ class Device extends Entity<ControllerEventMap> {
             endpoint.removeFromAllGroupsDatabase();
         }
 
-        if (Entity.database!.has(this.ID)) {
-            Entity.database!.remove(this.ID);
-        }
+        Entity.database!.delete(schema.device).where(eq(schema.device.id, this.ID)).run();
 
         Device.deletedDevices.set(this.ieeeAddr, this);
         Device.devices.delete(this.ieeeAddr);

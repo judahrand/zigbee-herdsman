@@ -1,17 +1,19 @@
 import events from 'events';
 
+import {BetterSQLite3Database} from 'drizzle-orm/better-sqlite3';
+
 import {Adapter} from '../../adapter';
-import Database from '../database';
+import * as schema from '../database/schema';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type EventMap<T> = Record<keyof T, any[]> | DefaultEventMap;
 type DefaultEventMap = [never];
 
 abstract class Entity<T extends EventMap<T> = DefaultEventMap> extends events.EventEmitter<T> {
-    protected static database?: Database;
+    protected static database?: BetterSQLite3Database<typeof schema>;
     protected static adapter?: Adapter;
 
-    public static injectDatabase(database: Database): void {
+    public static injectDatabase(database: BetterSQLite3Database<typeof schema>): void {
         Entity.database = database;
     }
 

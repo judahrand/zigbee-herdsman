@@ -3,7 +3,9 @@ import 'regenerator-runtime/runtime';
 import fs from 'fs';
 import path from 'path';
 
+import Database from 'better-sqlite3';
 import Bonjour, {Browser, BrowserConfig, Service} from 'bonjour-service';
+import {drizzle} from 'drizzle-orm/better-sqlite3';
 import equals from 'fast-deep-equal/es6';
 
 import {Adapter} from '../src/adapter';
@@ -11,6 +13,7 @@ import {DeconzAdapter} from '../src/adapter/deconz/adapter';
 import {ZStackAdapter} from '../src/adapter/z-stack/adapter';
 import {ZiGateAdapter} from '../src/adapter/zigate/adapter';
 import {Controller} from '../src/controller';
+import * as schema from '../src/controller/database/schema';
 import * as Events from '../src/controller/events';
 import Request from '../src/controller/helpers/request';
 import zclTransactionSequenceNumber from '../src/controller/helpers/zclTransactionSequenceNumber';
@@ -512,6 +515,7 @@ const options = {
 };
 
 const databaseContents = () => fs.readFileSync(options.databasePath).toString();
+const databaseConnection = () => drizzle(Database(options.databasePath), {schema});
 
 describe('Controller', () => {
     let controller: Controller;
@@ -1717,7 +1721,11 @@ describe('Controller', () => {
 
     it('Join a device', async () => {
         await controller.start();
-        expect(databaseContents().includes('0x129')).toBeFalsy();
+        expect(
+            databaseConnection()
+                .query.device.findFirst({where: (users, {eq}) => eq(users.ieeeAddr, '0x129')})
+                .sync(),
+        ).toBeUndefined();
         await mockAdapterEvents['deviceJoined']({networkAddress: 129, ieeeAddr: '0x129'});
         expect(equalsPartial(events.deviceJoined[0].device, {ID: 2, networkAddress: 129, ieeeAddr: '0x129'})).toBeTruthy();
         expect(events.deviceInterview[0]).toStrictEqual({
@@ -1785,9 +1793,87 @@ describe('Controller', () => {
         expect(events.deviceInterview[1]).toStrictEqual({status: 'successful', device: device});
         expect(deepClone(controller.getDeviceByNetworkAddress(129))).toStrictEqual(device);
         expect(events.deviceInterview.length).toBe(2);
-        expect(databaseContents()).toStrictEqual(
-            `{"id":1,"type":"Coordinator","ieeeAddr":"0x0000012300000000","nwkAddr":0,"manufId":7,"epList":[1,2],"endpoints":{"1":{"profId":2,"epId":1,"devId":3,"inClusterList":[10],"outClusterList":[11],"clusters":{},"binds":[],"configuredReportings":[],"meta":{}},"2":{"profId":3,"epId":2,"devId":5,"inClusterList":[1],"outClusterList":[0],"clusters":{},"binds":[],"configuredReportings":[],"meta":{}}},"interviewCompleted":true,"meta":{}}\n{"id":2,"type":"Router","ieeeAddr":"0x129","nwkAddr":129,"manufId":1212,"manufName":"KoenAndCo","powerSource":"Mains (single phase)","modelId":"myModelID","epList":[1],"endpoints":{"1":{"profId":99,"epId":1,"devId":5,"inClusterList":[0,1],"outClusterList":[2],"clusters":{},"binds":[],"configuredReportings":[],"meta":{}}},"appVersion":2,"stackVersion":101,"hwVersion":3,"dateCode":"201901","swBuildId":"1.01","zclVersion":1,"interviewCompleted":true,"meta":{},"lastSeen":150}`,
-        );
+        expect(databaseConnection().query.device.findMany().sync()).toStrictEqual([
+            {
+                id: 1,
+                appVersion: null,
+                checkinInterval: null,
+                dateCode: null,
+                type: 'Coordinator',
+                ieeeAddr: '0x0000012300000000',
+                nwkAddr: 0,
+                manufId: 7,
+                manufName: null,
+                modelId: null,
+                powerSource: null,
+                stackVersion: null,
+                swBuildId: null,
+                zclVersion: null,
+                epList: [1, 2],
+                hwVersion: null,
+                endpoints: {
+                    1: {
+                        profId: 2,
+                        epId: 1,
+                        devId: 3,
+                        inClusterList: [10],
+                        outClusterList: [11],
+                        clusters: {},
+                        binds: [],
+                        configuredReportings: [],
+                        meta: {},
+                    },
+                    2: {
+                        profId: 3,
+                        epId: 2,
+                        devId: 5,
+                        inClusterList: [1],
+                        outClusterList: [0],
+                        clusters: {},
+                        binds: [],
+                        configuredReportings: [],
+                        meta: {},
+                    },
+                },
+                interviewCompleted: true,
+                lastSeen: 0,
+                meta: {},
+            },
+            {
+                id: 2,
+                type: 'Router',
+                ieeeAddr: '0x129',
+                nwkAddr: 129,
+                manufId: 1212,
+                manufName: 'KoenAndCo',
+                powerSource: 'Mains (single phase)',
+                modelId: 'myModelID',
+                epList: [1],
+                endpoints: {
+                    1: {
+                        profId: 99,
+                        epId: 1,
+                        devId: 5,
+                        inClusterList: [0, 1],
+                        outClusterList: [2],
+                        clusters: {},
+                        binds: [],
+                        configuredReportings: [],
+                        meta: {},
+                    },
+                },
+                appVersion: 2,
+                stackVersion: 101,
+                hwVersion: 3,
+                dateCode: '201901',
+                swBuildId: '1.01',
+                zclVersion: 1,
+                interviewCompleted: true,
+                meta: {},
+                lastSeen: 150,
+                checkinInterval: null,
+            },
+        ]);
         expect(controller.getDeviceByNetworkAddress(129)!.lastSeen).toBe(Date.now());
     });
 
@@ -2267,8 +2353,6 @@ describe('Controller', () => {
         expect(controller.getDevicesByType('Coordinator')[0].type).toBe('Coordinator');
         expect(controller.getDevicesByType('Coordinator')[0].ieeeAddr).toBe('0x0000012300000000');
         expect(controller.getDevicesByType('Router')[0].ieeeAddr).toBe('0x129');
-        expect(databaseContents().includes('0x129')).toBeTruthy();
-        expect(databaseContents().includes('groupID')).toBeTruthy();
         await controller.stop();
 
         mockAdapterStart.mockReturnValueOnce('reset');
@@ -2277,8 +2361,6 @@ describe('Controller', () => {
         expect(controller.getDevicesByType('Coordinator')[0].type).toBe('Coordinator');
         expect(controller.getDeviceByIeeeAddr('0x129')).toBeUndefined();
         expect(controller.getGroupByID(1)).toBeUndefined();
-        expect(databaseContents().includes('0x129')).toBeFalsy();
-        expect(databaseContents().includes('groupID')).toBeFalsy();
     });
 
     it('Existing database.tmp should not be overwritten', async () => {
@@ -2289,15 +2371,11 @@ describe('Controller', () => {
         await mockAdapterEvents['deviceJoined']({networkAddress: 129, ieeeAddr: '0x129'});
         controller.createGroup(1);
 
-        // The old database.db.tmp should be gone
-        expect(fs.existsSync(databaseTmpPath)).toBeFalsy();
+        // The database.db.tmp should still be there
+        expect(fs.existsSync(databaseTmpPath)).toBeTruthy();
 
-        // There should still be a database.db.tmp.<something>
-        const dbtmp = fs.readdirSync(TEMP_PATH).filter((value) => value.startsWith('database.db.tmp'));
-        expect(dbtmp.length).toBe(1);
-
-        // The database.db.tmp.<something> should still have our "Hello, World!"
-        expect(fs.readFileSync(getTempFile(dbtmp[0])).toString().startsWith('Hello, World!')).toBeTruthy();
+        // The database.db.tmp should still have our "Hello, World!"
+        expect(fs.readFileSync(databaseTmpPath).toString().startsWith('Hello, World!')).toBeTruthy();
     });
 
     it('Should create backup of databse before clearing when datbaseBackupPath is provided', async () => {
@@ -5427,10 +5505,96 @@ describe('Controller', () => {
                 name: 'add',
             },
         });
+        expect(databaseConnection().query.device.findMany().sync()).toStrictEqual([
+            {
+                id: 1,
+                type: 'Coordinator',
+                ieeeAddr: '0x0000012300000000',
+                nwkAddr: 0,
+                manufId: 7,
+                epList: [1, 2],
+                appVersion: null,
+                dateCode: null,
+                checkinInterval: null,
+                endpoints: {
+                    '1': {
+                        profId: 2,
+                        epId: 1,
+                        devId: 3,
+                        inClusterList: [10],
+                        outClusterList: [11],
+                        clusters: {},
+                        binds: [],
+                        configuredReportings: [],
+                        meta: {},
+                    },
+                    2: {
+                        binds: [],
+                        clusters: {},
+                        configuredReportings: [],
+                        devId: 5,
+                        epId: 2,
+                        inClusterList: [1],
+                        meta: {},
+                        outClusterList: [0],
+                        profId: 3,
+                    },
+                },
+                hwVersion: null,
+                lastSeen: 0,
+                interviewCompleted: true,
+                manufName: null,
+                meta: {},
+                modelId: null,
+                powerSource: null,
+                stackVersion: null,
+                swBuildId: null,
+                zclVersion: null,
+            },
+            {
+                id: 2,
+                appVersion: 2,
+                checkinInterval: null,
+                dateCode: '201901',
+                endpoints: {
+                    '1': {
+                        binds: [],
+                        clusters: {},
+                        configuredReportings: [],
+                        devId: 5,
+                        epId: 1,
+                        inClusterList: [0, 1],
+                        meta: {},
+                        outClusterList: [2],
+                        profId: 99,
+                    },
+                },
+                epList: [1],
+                hwVersion: 3,
+                ieeeAddr: '0x129',
+                interviewCompleted: true,
+                lastSeen: 150,
+                manufId: 1212,
+                manufName: 'KoenAndCo',
+                meta: {},
+                modelId: 'myModelID',
+                nwkAddr: 129,
+                powerSource: 'Mains (single phase)',
+                stackVersion: 101,
+                swBuildId: '1.01',
+                type: 'Router',
+                zclVersion: 1,
+            },
+        ]);
         expect(group.members).toContain(endpoint);
-        expect(databaseContents()).toContain(
-            `{"id":1,"type":"Coordinator","ieeeAddr":"0x0000012300000000","nwkAddr":0,"manufId":7,"epList":[1,2],"endpoints":{"1":{"profId":2,"epId":1,"devId":3,"inClusterList":[10],"outClusterList":[11],"clusters":{},"binds":[],"configuredReportings":[],"meta":{}},"2":{"profId":3,"epId":2,"devId":5,"inClusterList":[1],"outClusterList":[0],"clusters":{},"binds":[],"configuredReportings":[],"meta":{}}},"interviewCompleted":true,"meta":{}}\n{"id":2,"type":"Router","ieeeAddr":"0x129","nwkAddr":129,"manufId":1212,"manufName":"KoenAndCo","powerSource":"Mains (single phase)","modelId":"myModelID","epList":[1],"endpoints":{"1":{"profId":99,"epId":1,"devId":5,"inClusterList":[0,1],"outClusterList":[2],"clusters":{},"binds":[],"configuredReportings":[],"meta":{}}},"appVersion":2,"stackVersion":101,"hwVersion":3,"dateCode":"201901","swBuildId":"1.01","zclVersion":1,"interviewCompleted":true,"meta":{},"lastSeen":150}\n{"id":3,"type":"Group","groupID":2,"members":[{"deviceIeeeAddr":"0x129","endpointID":1}],"meta":{}}`,
-        );
+        expect(databaseConnection().query.group.findMany().sync()).toStrictEqual([
+            {
+                id: 1,
+                groupId: 2,
+                members: [{deviceIeeeAddr: '0x129', endpointID: 1}],
+                meta: {},
+            },
+        ]);
     });
 
     it('Remove endpoint from group', async () => {
@@ -7193,32 +7357,6 @@ describe('Controller', () => {
                 meta: {},
             }),
         );
-    });
-
-    it('Shouldnt load device from group databaseentry', async () => {
-        expect(() => {
-            // @ts-ignore
-            Device.fromDatabaseEntry({type: 'Group', endpoints: []});
-        }).toThrow('Cannot load device from group');
-    });
-
-    it('Should throw datbase basic crud errors', async () => {
-        await controller.start();
-        await mockAdapterEvents['deviceJoined']({networkAddress: 129, ieeeAddr: '0x129'});
-        expect(() => {
-            // @ts-expect-error mock
-            controller.database.insert({id: 2});
-        }).toThrow(`DatabaseEntry with ID '2' already exists`);
-
-        expect(() => {
-            // @ts-expect-error mock
-            controller.database.remove(3);
-        }).toThrow(`DatabaseEntry with ID '3' does not exist`);
-
-        expect(() => {
-            // @ts-expect-error mock
-            controller.database.update({id: 3});
-        }).toThrow(`DatabaseEntry with ID '3' does not exist`);
     });
 
     it('Should save received attributes', async () => {
