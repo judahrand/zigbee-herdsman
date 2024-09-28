@@ -2,6 +2,7 @@ import assert from 'assert';
 import events from 'events';
 import fs from 'fs';
 
+import {BetterSQLite3Database} from 'drizzle-orm/better-sqlite3';
 import mixinDeep from 'mixin-deep';
 
 import {Adapter, Events as AdapterEvents, TsType as AdapterTsType} from '../adapter';
@@ -14,7 +15,8 @@ import * as Zcl from '../zspec/zcl';
 import {FrameControl} from '../zspec/zcl/definition/tstype';
 import * as Zdo from '../zspec/zdo';
 import * as ZdoTypes from '../zspec/zdo/definition/tstypes';
-import Database from './database';
+import createDatabase from './database';
+import * as schema from './database/schema';
 import * as Events from './events';
 import GreenPower from './greenPower';
 import {ZclFrameConverter} from './helpers';
@@ -70,7 +72,7 @@ export interface ControllerEventMap {
 class Controller extends events.EventEmitter<ControllerEventMap> {
     private options: Options;
     // @ts-expect-error assigned and validated in start()
-    private database: Database;
+    private database: BetterSQLite3Database<typeof schema>;
     // @ts-expect-error assigned and validated in start()
     private adapter: Adapter;
     // @ts-expect-error assigned and validated in start()
@@ -126,7 +128,7 @@ class Controller extends events.EventEmitter<ControllerEventMap> {
      */
     public async start(): Promise<AdapterTsType.StartResult> {
         // Database (create end inject)
-        this.database = Database.open(this.options.databasePath);
+        this.database = await createDatabase(this.options.databasePath);
         Entity.injectDatabase(this.database);
 
         // Adapter (create and inject)
@@ -371,14 +373,12 @@ class Controller extends events.EventEmitter<ControllerEventMap> {
 
     private databaseSave(): void {
         for (const device of Device.allIterator()) {
-            device.save(false);
+            device.save();
         }
 
         for (const group of Group.allIterator()) {
-            group.save(false);
+            group.save();
         }
-
-        this.database.write();
     }
 
     public async backup(): Promise<void> {

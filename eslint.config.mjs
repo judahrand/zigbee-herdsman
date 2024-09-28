@@ -13,6 +13,7 @@ export default tseslint.config(
                 project: true,
             },
         },
+        ignores: ['drizzle.config.ts'],
         rules: {
             '@typescript-eslint/await-thenable': 'error',
             '@typescript-eslint/ban-ts-comment': 'error',
